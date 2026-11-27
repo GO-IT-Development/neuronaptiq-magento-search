@@ -4,11 +4,16 @@
     <default>
         <neuronaptiq_search>
             <general>
-                <search>1</search>
+                <search>0</search>
+                <categories>0</categories>
                 <crosssellings>0</crosssellings>
                 <crosssellings_limit>8</crosssellings_limit>
+                <crosssellings_kind>related</crosssellings_kind>
+                <upsell_kind>off</upsell_kind>
+                <cart_crosssell_kind>off</cart_crosssell_kind>
+                <topseller>0</topseller>
                 <send_customer_data>0</send_customer_data>
-                <tracking>1</tracking>
+                <tracking>0</tracking>
                 <environment>prod</environment>
                 <name></name>
                 <token></token>

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection;
 
+use Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierFactory;
 use Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierInterface;
 use Magento\Framework\Api\Search\DocumentInterface;
 use Magento\Framework\Api\Search\SearchResultInterface;
@@ -12,6 +13,10 @@ use NeuronaptiQ\Search\Model\ApiSearchResultRegistry;
 
 /**
  * Applies search results to the catalog search collection with exact score ordering
+ *
+ * NeuronaptiQ results are already paginated and ordered. Other results are sliced here, or, with a default applier
+ * factory (the category collection, SimpKo/project#380), applied by the applier of the search engine, so category
+ * pages without NeuronaptiQ stay unchanged.
  */
 class SearchResultApplier implements SearchResultApplierInterface
 {
@@ -41,24 +46,32 @@ class SearchResultApplier implements SearchResultApplierInterface
     private ApiSearchResultRegistry $apiSearchResultRegistry;
 
     /**
+     * @var SearchResultApplierFactory|null
+     */
+    private ?SearchResultApplierFactory $defaultApplierFactory;
+
+    /**
      * @param AbstractDb $collection
      * @param SearchResultInterface $searchResult
      * @param int $size
      * @param int $currentPage
      * @param ApiSearchResultRegistry $apiSearchResultRegistry
+     * @param SearchResultApplierFactory|null $defaultApplierFactory applier of the search engine for other results
      */
     public function __construct(
         AbstractDb $collection,
         SearchResultInterface $searchResult,
         int $size,
         int $currentPage,
-        ApiSearchResultRegistry $apiSearchResultRegistry
+        ApiSearchResultRegistry $apiSearchResultRegistry,
+        ?SearchResultApplierFactory $defaultApplierFactory = null
     ) {
         $this->collection = $collection;
         $this->searchResult = $searchResult;
         $this->size = $size;
         $this->currentPage = $currentPage;
         $this->apiSearchResultRegistry = $apiSearchResultRegistry;
+        $this->defaultApplierFactory = $defaultApplierFactory;
     }
 
     /**
@@ -66,6 +79,17 @@ class SearchResultApplier implements SearchResultApplierInterface
      */
     public function apply()
     {
+        $isApiResult = $this->apiSearchResultRegistry->isApiResult($this->searchResult);
+        if ($this->defaultApplierFactory !== null && !$isApiResult) {
+            $this->defaultApplierFactory->create([
+                'collection' => $this->collection,
+                'searchResult' => $this->searchResult,
+                'size' => $this->size,
+                'currentPage' => $this->currentPage,
+            ])->apply();
+            return;
+        }
+
         $items = $this->searchResult->getItems();
         if (empty($items)) {
             $this->collection->getSelect()->where('NULL');

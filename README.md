@@ -57,23 +57,51 @@ modules twice. Configuration values are kept, they are stored in the database.
 
 ## Configuration
 
-*Stores → Configuration → NeuronaptiQ → Search Settings → General Configuration*
-(config path `neuronaptiq_search/general/*`, all fields available on default, website and store view scope)
+*Stores → Configuration → NeuronaptiQ → Settings*, grouped by topic. All functions are switched off after the
+installation: enter the connection data and switch on the functions you want to use. All values are stored below
+`neuronaptiq_search/general/*` (the path column), on default, website and store view scope unless noted.
+
+**Connection**
 
 | Field | Path | Default | Description |
 |---|---|---|---|
-| Enable Search | `search` | Yes | Use NeuronaptiQ for search suggestions and the quick search result page |
-| Enable Cross-Sellings | `crosssellings` | No | Fill the "Related Products" block of the product page with NeuronaptiQ cross-sellings |
-| Cross-Selling Limit | `crosssellings_limit` | 8 | Number of cross-selling products (1–20) |
-| Send Customer Data | `send_customer_data` | No | Send data of logged-in customers to the API (requires a legal basis, see below) |
-| Enable Tracking | `tracking` | Yes | Track cart changes, checkout, orders and logins |
 | Environment | `environment` | prod | `dev`, `test` or `prod`, selects the API base URL |
 | Instance Name | `name` | – | Name of the NeuronaptiQ instance (`https://{name}.synapse.neuronaptiq.ai`) |
 | Token | `token` | – | Integration token (stored encrypted), sent as `Authorization: Bearer …` |
 | API Timeout (Seconds) | `timeout` | 2 | Timeout of all API requests |
+
+**Search**
+
+| Field | Path | Default | Description |
+|---|---|---|---|
+| Enable Search | `search` | No | Use NeuronaptiQ for search suggestions and the quick search result page |
 | Suggest Limit | `suggest_limit` | 5 | Maximum number of suggested products |
 | Enhanced Search Suggestions | `enhanced_suggestions` | Yes | Image, price and direct link to the product page in the suggestions |
 | Suggest Parent Products Instead of Variants | `suggest_parent_products` | No | Variant hits are suggested as their parent product (see *Search suggestions*) |
+| Enable Category Pages | `categories` | No | List the products of the category pages by NeuronaptiQ, see *Category pages* |
+
+**Recommendations**
+
+| Field | Path | Default | Description |
+|---|---|---|---|
+| Enable Cross-Sellings | `crosssellings` | No | Fill the "Related Products" block of the product page with NeuronaptiQ cross-sellings |
+| Kind of the Related Products | `crosssellings_kind` | Similar products | Kind of the recommendations in the "Related Products" block, see *Cross-sellings* |
+| Kind of the Upsell Products | `upsell_kind` | Off | Kind of the recommendations in the upsell block of the product page; off: Magento's upsell products |
+| Kind of the Cross-Sell Products in the Cart | `cart_crosssell_kind` | Off | Kind of the recommendations in the cross-sell block of the cart page; off: Magento's cross-sell products |
+| Cross-Selling Limit | `crosssellings_limit` | 8 | Number of recommended products per block (1–20) |
+| Enable Topseller Widget | `topseller` | No | The widget "NeuronaptiQ Topseller" shows the topsellers, see *Topseller widget* |
+
+**Tracking and Privacy**
+
+| Field | Path | Default | Description |
+|---|---|---|---|
+| Enable Tracking | `tracking` | No | Track cart changes, checkout, orders and logins |
+| Send Customer Data | `send_customer_data` | No | Send data of logged-in customers to the API (requires a legal basis, see below) |
+
+**Logging**
+
+| Field | Path | Default | Description |
+|---|---|---|---|
 | Separate Log File | `separate_log_file` | Yes | Log to `var/log/neuronaptiq.log` instead of the Magento logger (default scope only, see *Logging*) |
 
 API base URLs per environment:
@@ -321,14 +349,74 @@ ElasticSuite is handled by `NeuronaptiQ_SearchElasticsuite` (multiselect, price 
   `Plugin/SearchResultPageCachePlugin` reports the layout as not cacheable). Otherwise a single bot request
   would cache the fallback result of a search term (also the JSON of `search/ajax/suggest`) for all visitors.
 
+### Category pages
+
+With *Enable Category Pages*, the product list of the category pages (`catalog_category_view`) comes from
+`POST …/category`, like the search result page without query: Magento's page, toolbar, pager and layered navigation
+stay, NeuronaptiQ delivers the products, the total and the facets.
+
+- **Categories:** the category of the page; anchor categories with the products of their subcategories, categories
+  without anchor only with the products assigned to them (`directOnly`). A subcategory selected in the layered
+  navigation is applied like the other filters.
+- **Sorting:** price and name are sorted by NeuronaptiQ, also as default sorting of the category. *Position* (and
+  every other sorting) is sorted by the topsellers of NeuronaptiQ: the positions maintained in the category are not
+  used. Shops that need them keep *Enable Category Pages* switched off.
+- **Filters and facets** like on the search result page, see *Layered navigation*.
+- **Fallback** to Magento's category page like the search: on API errors, on an empty first page without selection,
+  and for page sizes above 100; these responses are excluded from the full page cache. With the setting switched
+  off, the category pages are unchanged (Magento's result applier).
+- **Large categories:** NeuronaptiQ lists up to a maximum number of products per request (set in NeuronaptiQ,
+  5000 by default). In larger categories the sorting by price sorts the topsellers within this number, and with
+  filters the number of products and the counts of the layered navigation refer to it.
+- Only the category page itself: product lists of widgets, GraphQL and the REST API are not affected.
+- With Smile ElasticSuite, the category pages stay with ElasticSuite (merchandising, virtual categories).
+
 ### Cross-sellings
 
-- `Plugin/RelatedProductsPlugin` (after `Related::getItems` / `Related::getProductUrl`) fills the
-  "Related Products" block with the result of `POST …/xselling/{productId}` (`Model/CrossSellingService`).
-- Products are loaded like in the core block (visible in catalog, prices, URL rewrites, stock filter); variant
-  hits are shown as their parent product with a variant preselection hash on the product link.
-- The block is rendered server side and cached by the full page cache. If cross-sellings are disabled, the
-  API fails or returns no visible products, the maintained related products are shown.
+NeuronaptiQ fills Magento's own blocks with its recommendations; the blocks are rendered with the templates of
+Magento or the theme. Each block has a kind:
+
+| Kind | Recommends |
+|---|---|
+| Similar products (`related`) | alternatives to the product |
+| Accessories (`complementary`) | accessories, consumables and spare parts, those of the product's brand first |
+| Upsell (`upsell`) | similar products of the same kind, more expensive within the price range set in NeuronaptiQ |
+
+| Block | Setting | Request |
+|---|---|---|
+| "Related Products" of the product page | *Enable Cross-Sellings*, *Kind of the Related Products* | `POST …/xselling/{productId}` |
+| Upsell block of the product page | *Kind of the Upsell Products* | `POST …/xselling/{productId}` |
+| Cross-sell block ("More Choices") of the cart page | *Kind of the Cross-Sell Products in the Cart* | `POST …/xselling` with the products of the cart (the first 20) |
+
+- Plugins after `Related::getItems`, `Upsell::getItemCollection` and `Crosssell::getItems`
+  (`Model/CrossSellingService`); the requests contain the kind and the base currency of the store, the currency of
+  the price range of the upsell.
+- Products are loaded like in the core blocks (visible in catalog, prices, URL rewrites, stock filter); variant
+  hits are shown as their parent product with a variant preselection hash on the product link. The products of the
+  cart are not recommended in the cart.
+- If a block is switched off, the API fails or returns no visible products, Magento's maintained products of the
+  block are shown.
+- The product page is cached by the full page cache, the recommendations with it; the cart page is not cached.
+- The cross-sell block of the cart page needs Magento's setting *Sales → Checkout → Shopping Cart → Display
+  Cross-sell Items* (on by default).
+
+### Topseller widget
+
+The widget "NeuronaptiQ Topseller" (*Content → Widgets*, or *Insert Widget* in CMS pages and blocks) shows the best
+selling products of the last days (set in NeuronaptiQ), on category pages those of the category and its
+subcategories, otherwise those of the shop (`POST …/recommend`, kind `topseller`).
+
+- Based on Magento's widget "Catalog Products List" and rendered with its template
+  (`Magento_CatalogWidget::product/widget/content/grid.phtml`), which themes can override; parameters: title,
+  number of products (1–20, default 5: one row on one-column pages in Luma, on pages with a sidebar Luma shows 4
+  per row), template, cache lifetime (default 1 hour).
+- Placement on category pages: layout updates for "Anchor Categories" and "Non-Anchor Categories"; on the home page:
+  "Specified Page" → "CMS Home Page".
+- Without topsellers or if the API fails, Magento's bestsellers are shown like in the admin dashboard (reports
+  statistics, refreshed by *Reports → Refresh Statistics* or the cron; Magento limits them to the 5 best selling
+  products of the store), on category pages those of them in the category.
+- With *Enable Topseller Widget* switched off, the widget shows nothing and makes no requests.
+- The widget is cached in the block cache and with the page in the full page cache.
 
 ### Tracking
 
@@ -478,22 +566,24 @@ Magento, so `full` would only transfer data that is not used.
 
 | Path | Purpose |
 |---|---|
-| `Api/` | Service contracts: `SearchApiClientInterface`, `FacetedSearchApiClientInterface`, `CrossSellingApiClientInterface`, `TrackingApiClientInterface` |
+| `Api/` | Service contracts: `SearchApiClientInterface`, `FacetedSearchApiClientInterface`, `CategorySearchApiClientInterface`, `CrossSellingApiClientInterface`, `RecommendationApiClientInterface`, `TrackingApiClientInterface` |
+| `Block/Product/Widget/` | Topseller widget (`etc/widget.xml`) |
 | `Exception/SearchApiException` | Thrown on every API problem (missing endpoint/token, transport error, non-2xx, invalid response) |
-| `Model/Api/` | HTTP clients (`SearchApiClient` implements search, suggest and cross-selling) |
+| `Model/Api/` | HTTP clients (`SearchApiClient` implements search, suggest, cross-selling and recommendations) |
 | `Model/` | Services, configuration, product loading, customer data, SID handling |
 | `Model/Search/` | Layered navigation: selection from the search criteria, price ranges, facets as aggregations |
 | `Model/Tracking/` | Conversion payloads |
 | `Model/ResourceModel/` | Search result applier, parent `updated_at` update |
-| `Plugin/` | Integration into autocomplete, search, layout cache, related products, shipping information |
+| `Plugin/` | Integration into autocomplete, search, layout cache, related, upsell and cross-sell products, shipping information |
 | `Observer/` | Tracking observers, parent timestamp observer |
-| `etc/` | Module, DI (global, frontend, webapi_rest), events, ACL, admin configuration |
+| `etc/` | Module, DI (global, frontend, webapi_rest), events, ACL, admin configuration, widget |
 | `view/frontend/` | RequireJS mixin for the quick search widget, LESS for enhanced suggestions |
 | `i18n/` | `en_US`, `de_DE` |
 | `Test/Unit/` | Unit tests |
 
 Error handling: the API clients throw `SearchApiException`; plugins and services catch it, log it and fall
-back to Magento (search, suggestions, related products) or skip the event (tracking). Request and response
+back to Magento (search, suggestions, related, upsell and cross-sell products, bestsellers) or skip the event
+(tracking). Request and response
 bodies are logged on `debug` level only.
 
 ## Theme compatibility
@@ -503,4 +593,8 @@ bodies are logged on `debug` level only.
 - The enhanced suggestions (image, price, direct link) rely on the RequireJS mixin for
   `Magento_Search/js/form-mini` and therefore work with Luma/Blank based themes. Themes without RequireJS
   (e.g. Hyvä) render the suggestions with their own templates.
+- The cross-sellings fill the items of Magento's blocks ("Related Products", upsell, cross-sell); themes that load
+  these products without the blocks (e.g. Hyvä with its own view models) do not show them.
+- The topseller widget uses the template of Magento's "Catalog Products List" widget; themes that override it render
+  the topsellers the same way.
 - Third-party search modules that replace the autocomplete or the search completely bypass this module.

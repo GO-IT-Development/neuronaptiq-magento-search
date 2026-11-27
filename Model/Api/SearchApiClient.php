@@ -9,8 +9,10 @@ use Magento\Framework\HTTP\PhpEnvironment\RemoteAddress;
 use Magento\Framework\Serialize\Serializer\Json;
 use Magento\Store\Model\Store;
 use Magento\Store\Model\StoreManagerInterface;
+use NeuronaptiQ\Search\Api\CategorySearchApiClientInterface;
 use NeuronaptiQ\Search\Api\CrossSellingApiClientInterface;
 use NeuronaptiQ\Search\Api\FacetedSearchApiClientInterface;
+use NeuronaptiQ\Search\Api\RecommendationApiClientInterface;
 use NeuronaptiQ\Search\Api\SearchApiClientInterface;
 use NeuronaptiQ\Search\Exception\SearchApiException;
 use NeuronaptiQ\Search\Model\Config;
@@ -32,7 +34,9 @@ use Psr\Log\LoggerInterface;
 class SearchApiClient implements
     SearchApiClientInterface,
     CrossSellingApiClientInterface,
-    FacetedSearchApiClientInterface
+    RecommendationApiClientInterface,
+    FacetedSearchApiClientInterface,
+    CategorySearchApiClientInterface
 {
     /**
      * Fields returned by the API: "basic" contains everything the module reads (id, score, parentId, categories,
@@ -202,9 +206,111 @@ class SearchApiClient implements
      */
     public function getCrossSellings(string $productId, int $limit, ?int $storeId = null): array
     {
-        $endpoint = trim($this->config->getCrossSellingApiEndpoint($productId, $storeId));
+        return $this->getCrossSellingsOfKind($productId, Config::KIND_RELATED, $limit, $storeId);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getCrossSellingsOfKind(string $productId, string $kind, int $limit, ?int $storeId = null): array
+    {
+        return $this->postRecommendation(
+            $this->config->getCrossSellingApiEndpoint($productId, $storeId),
+            $this->buildCrossSellingBody($kind, $limit, $storeId),
+            'Cross-selling',
+            $storeId
+        );
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getCrossSellingsOfProducts(
+        array $productIds,
+        string $kind,
+        int $limit,
+        ?int $storeId = null
+    ): array {
+        $payload = $this->buildCrossSellingBody($kind, $limit, $storeId);
+        $payload['productIds'] = array_values(array_map('strval', $productIds));
+
+        return $this->postRecommendation(
+            $this->config->getCrossSellingProductsApiEndpoint($storeId),
+            $payload,
+            'Cross-selling',
+            $storeId
+        );
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getTopsellers(?string $categoryId, int $limit, ?int $storeId = null): array
+    {
+        $payload = $this->buildRequestBody('', $limit, $storeId);
+        unset($payload['q']);
+        $payload['kind'] = 'topseller';
+        if ($categoryId !== null) {
+            $payload['params']['categoryIds'] = [$categoryId];
+        }
+
+        return $this->postRecommendation(
+            $this->config->getRecommendApiEndpoint($storeId),
+            $payload,
+            'Recommend',
+            $storeId
+        );
+    }
+
+    /**
+     * Payload of a cross-selling, with the kind and the base currency of the store
+     *
+     * Like the suggest request (channel, remote, settings, sid, customer) without query; the currency is the one of
+     * the price range of the upsell.
+     *
+     * @param string $kind
+     * @param int $limit
+     * @param int|null $storeId
+     * @return array<string, mixed>
+     */
+    private function buildCrossSellingBody(string $kind, int $limit, ?int $storeId): array
+    {
+        $payload = $this->buildRequestBody('', $limit, $storeId);
+        unset($payload['q']);
+        $payload['kind'] = $kind;
+
+        try {
+            // the prices of the products are in the base currency like the price filters of the search, the
+            // displayed currency is only converted
+            $store = $this->storeManager->getStore($storeId);
+            $currency = $store instanceof Store ? (string)$store->getBaseCurrencyCode() : '';
+        } catch (\Throwable $e) {
+            $currency = '';
+        }
+        if ($currency !== '') {
+            $payload['params']['currency'] = $currency;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Posts a recommendation request and returns its hits
+     *
+     * @param string $endpoint
+     * @param array $payload
+     * @param string $label name of the API in log entries and errors
+     * @param int|null $storeId
+     * @return array
+     * @phpstan-param array<string, mixed> $payload
+     * @phpstan-return list<SearchHit>
+     * @throws SearchApiException
+     */
+    private function postRecommendation(string $endpoint, array $payload, string $label, ?int $storeId): array
+    {
+        $endpoint = trim($endpoint);
         if ($endpoint === '' || !filter_var($endpoint, FILTER_VALIDATE_URL)) {
-            throw new SearchApiException('Cross-selling API endpoint is not configured or invalid.');
+            throw new SearchApiException(sprintf('%s API endpoint is not configured or invalid.', $label));
         }
 
         $token = $this->config->getToken($storeId);
@@ -213,9 +319,6 @@ class SearchApiClient implements
         }
 
         try {
-            // Same payload as the suggest request (channel, remote, settings, sid, customer), without query
-            $payload = $this->buildRequestBody('', $limit, $storeId);
-            unset($payload['q']);
             $jsonPayload = $this->jsonSerializer->serialize($payload);
 
             $this->curl->setTimeout($this->config->getTimeout($storeId));
@@ -223,9 +326,7 @@ class SearchApiClient implements
             $this->curl->addHeader('Accept', 'application/json');
             $this->curl->addHeader('Authorization', 'Bearer ' . $token);
 
-            $this->logger->debug(
-                sprintf('[NeuronaptiQ_Search] Cross-selling request to %s: %s', $endpoint, $jsonPayload)
-            );
+            $this->logger->debug(sprintf('[NeuronaptiQ_Search] %s request to %s: %s', $label, $endpoint, $jsonPayload));
 
             $this->curl->post($endpoint, $jsonPayload);
 
@@ -233,12 +334,12 @@ class SearchApiClient implements
             $responseBody = (string)$this->curl->getBody();
 
             $this->logger->debug(
-                sprintf('[NeuronaptiQ_Search] Cross-selling response (HTTP %s): %s', $statusCode, $responseBody)
+                sprintf('[NeuronaptiQ_Search] %s response (HTTP %s): %s', $label, $statusCode, $responseBody)
             );
 
             if ($statusCode < 200 || $statusCode >= 300 || $responseBody === '') {
                 throw new SearchApiException(
-                    sprintf('Cross-selling API returned HTTP %s (see debug log for the response body)', $statusCode)
+                    sprintf('%s API returned HTTP %s (see debug log for the response body)', $label, $statusCode)
                 );
             }
 
@@ -246,7 +347,7 @@ class SearchApiClient implements
         } catch (SearchApiException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            throw new SearchApiException(sprintf('Error querying Cross-selling API: %s', $e->getMessage()), 0, $e);
+            throw new SearchApiException(sprintf('Error querying %s API: %s', $label, $e->getMessage()), 0, $e);
         }
     }
 
@@ -425,6 +526,88 @@ class SearchApiClient implements
         ?int $storeId = null,
         ?SearchFilters $filters = null
     ): array {
+        return $this->postSearchRequest(
+            $endpoint,
+            fn (): array => $this->buildSearchRequestBody($query, $page, $limit, $sort, $storeId, $filters),
+            'Search',
+            $storeId
+        );
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function executeCategorySearch(
+        int $page,
+        int $limit,
+        array $sort,
+        SearchFilters $filters,
+        bool $directOnly,
+        ?int $storeId = null
+    ): array {
+        $endpoint = trim($this->config->getCategoryApiEndpoint($storeId));
+        if ($endpoint === '' || !filter_var($endpoint, FILTER_VALIDATE_URL)) {
+            throw new SearchApiException('Category API endpoint is not configured or invalid.');
+        }
+
+        return $this->postSearchRequest(
+            $endpoint,
+            fn (): array => $this->buildCategoryRequestBody($page, $limit, $sort, $storeId, $filters, $directOnly),
+            'Category',
+            $storeId
+        );
+    }
+
+    /**
+     * Builds the JSON request payload of a category page: like the search without query
+     *
+     * The search service sorts a category page by topseller, name, price or created, without relevance: the sort
+     * key score (e.g. the sorting "Position" of Magento) is sent without sort, the search service then sorts by
+     * topseller.
+     *
+     * @param int $page
+     * @param int $limit
+     * @param array $sort
+     * @param int|null $storeId
+     * @param SearchFilters $filters
+     * @param bool $directOnly
+     * @return array<string, mixed>
+     * @phpstan-param SortOrder $sort
+     */
+    public function buildCategoryRequestBody(
+        int $page,
+        int $limit,
+        array $sort,
+        ?int $storeId,
+        SearchFilters $filters,
+        bool $directOnly
+    ): array {
+        $body = $this->buildSearchRequestBody('', $page, $limit, $sort, $storeId, $filters);
+        unset($body['q']);
+        if (($body['sort']['key'] ?? 'score') === 'score') {
+            unset($body['sort']);
+        }
+        if ($directOnly) {
+            $body['params']['directOnly'] = true;
+        }
+
+        return $body;
+    }
+
+    /**
+     * Posts a request of the search or a category page and processes its response
+     *
+     * @param string $endpoint
+     * @param callable $buildPayload
+     * @param string $label name of the API in log entries and errors
+     * @param int|null $storeId
+     * @return array
+     * @phpstan-param callable(): array<string, mixed> $buildPayload
+     * @phpstan-return FacetedSearchResult
+     * @throws SearchApiException
+     */
+    private function postSearchRequest(string $endpoint, callable $buildPayload, string $label, ?int $storeId): array
+    {
         $token = $this->config->getToken($storeId);
         if ($token === '') {
             throw new SearchApiException('API token is not configured.');
@@ -433,8 +616,7 @@ class SearchApiClient implements
         try {
             $timeout = $this->config->getTimeout($storeId);
 
-            $payload = $this->buildSearchRequestBody($query, $page, $limit, $sort, $storeId, $filters);
-            $jsonPayload = $this->jsonSerializer->serialize($payload);
+            $jsonPayload = $this->jsonSerializer->serialize($buildPayload());
 
             $this->curl->setTimeout($timeout);
             $this->curl->addHeader('Content-Type', 'application/json');
@@ -442,7 +624,7 @@ class SearchApiClient implements
             $this->curl->addHeader('Authorization', 'Bearer ' . $token);
 
             $this->logger->debug(
-                sprintf('[NeuronaptiQ_Search] Search request to %s: %s', $endpoint, $jsonPayload)
+                sprintf('[NeuronaptiQ_Search] %s request to %s: %s', $label, $endpoint, $jsonPayload)
             );
 
             $this->curl->post($endpoint, $jsonPayload);
@@ -451,12 +633,12 @@ class SearchApiClient implements
             $responseBody = (string)$this->curl->getBody();
 
             $this->logger->debug(
-                sprintf('[NeuronaptiQ_Search] Search response (HTTP %s): %s', $statusCode, $responseBody)
+                sprintf('[NeuronaptiQ_Search] %s response (HTTP %s): %s', $label, $statusCode, $responseBody)
             );
 
             if ($statusCode < 200 || $statusCode >= 300 || $responseBody === '') {
                 throw new SearchApiException(
-                    sprintf('Search API returned HTTP %s (see debug log for the response body)', $statusCode)
+                    sprintf('%s API returned HTTP %s (see debug log for the response body)', $label, $statusCode)
                 );
             }
 
@@ -465,7 +647,7 @@ class SearchApiClient implements
         } catch (SearchApiException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            throw new SearchApiException(sprintf('Error querying Search API: %s', $e->getMessage()), 0, $e);
+            throw new SearchApiException(sprintf('Error querying %s API: %s', $label, $e->getMessage()), 0, $e);
         }
     }
 
@@ -583,6 +765,10 @@ class SearchApiClient implements
                 }
             }
             $params['price'] = $price;
+        }
+
+        if ($filters->isCountOnly()) {
+            $params['countOnly'] = true;
         }
 
         if ($filters->hasFacets()) {

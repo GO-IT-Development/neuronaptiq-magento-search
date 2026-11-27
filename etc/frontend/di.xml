@@ -8,6 +8,25 @@
             <argument name="instanceName" xsi:type="string">NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\SearchResultApplier</argument>
         </arguments>
     </virtualType>
+    <!-- Category pages: NeuronaptiQ results with our applier, all others with Magento's applier (SimpKo/project#380) -->
+    <virtualType name="NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\CategorySearchResultApplier"
+                 type="NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\SearchResultApplier">
+        <arguments>
+            <argument name="defaultApplierFactory" xsi:type="object">elasticsearchSearchResultApplier\Factory</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\CategorySearchResultApplierFactory"
+                 type="Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierFactory">
+        <arguments>
+            <argument name="instanceName" xsi:type="string">NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\CategorySearchResultApplier</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="elasticsearchCategoryCollection">
+        <arguments>
+            <argument name="searchResultApplierFactory" xsi:type="object">NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\CategorySearchResultApplierFactory</argument>
+        </arguments>
+    </virtualType>
+
     <virtualType name="elasticsearchFulltextSearchCollection">
         <arguments>
             <argument name="searchResultApplierFactory" xsi:type="object">NeuronaptiQ\Search\Model\ResourceModel\Fulltext\Collection\SearchResultApplierFactory</argument>
@@ -31,6 +50,32 @@
     <type name="Magento\Catalog\Block\Product\ProductList\Related">
         <plugin name="neuronaptiq_search_related_products_plugin"
                 type="NeuronaptiQ\Search\Plugin\RelatedProductsPlugin"
+                sortOrder="10"
+                disabled="false"/>
+        <plugin name="neuronaptiq_search_variant_product_url_plugin"
+                type="NeuronaptiQ\Search\Plugin\VariantProductUrlPlugin"
+                sortOrder="10"
+                disabled="false"/>
+    </type>
+
+    <type name="Magento\Catalog\Block\Product\ProductList\Upsell">
+        <plugin name="neuronaptiq_search_upsell_products_plugin"
+                type="NeuronaptiQ\Search\Plugin\UpsellProductsPlugin"
+                sortOrder="10"
+                disabled="false"/>
+        <plugin name="neuronaptiq_search_variant_product_url_plugin"
+                type="NeuronaptiQ\Search\Plugin\VariantProductUrlPlugin"
+                sortOrder="10"
+                disabled="false"/>
+    </type>
+
+    <type name="Magento\Checkout\Block\Cart\Crosssell">
+        <plugin name="neuronaptiq_search_cart_crosssell_plugin"
+                type="NeuronaptiQ\Search\Plugin\CartCrosssellPlugin"
+                sortOrder="10"
+                disabled="false"/>
+        <plugin name="neuronaptiq_search_variant_product_url_plugin"
+                type="NeuronaptiQ\Search\Plugin\VariantProductUrlPlugin"
                 sortOrder="10"
                 disabled="false"/>
     </type>

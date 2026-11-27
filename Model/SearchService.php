@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace NeuronaptiQ\Search\Model;
 
 use Magento\Framework\App\RequestInterface;
+use NeuronaptiQ\Search\Api\CategorySearchApiClientInterface;
 use NeuronaptiQ\Search\Api\FacetedSearchApiClientInterface;
 use NeuronaptiQ\Search\Api\SearchApiClientInterface;
 use NeuronaptiQ\Search\Exception\EmptySearchResultException;
@@ -20,10 +21,11 @@ use NeuronaptiQ\Search\Model\Search\SearchFilters;
  * calls with the same parameters (e.g. the separate count query of ElasticSuite) do not query the API again.
  *
  * With filters, the selection of the layered navigation is sent to the API and the facets are returned for the
- * adapters (SimpKo/project#324).
+ * adapters (SimpKo/project#324). Category pages are requested like the search without query (SimpKo/project#380).
  *
  * @phpstan-import-type SortOrder from SearchApiClientInterface
  * @phpstan-import-type Facet from FacetedSearchApiClientInterface
+ * @phpstan-import-type FacetedSearchResult from FacetedSearchApiClientInterface
  * @phpstan-type ProductHit array{id: int, score: float, childrenIds: list<int>}
  * @phpstan-type ProductSearchResult array{hits: list<ProductHit>, total: int, facets: list<Facet>}
  */
@@ -43,6 +45,11 @@ class SearchService
     private FacetedSearchApiClientInterface $searchApiClient;
 
     /**
+     * @var CategorySearchApiClientInterface
+     */
+    private CategorySearchApiClientInterface $categoryApiClient;
+
+    /**
      * @var RequestInterface
      */
     private RequestInterface $request;
@@ -57,13 +64,16 @@ class SearchService
 
     /**
      * @param FacetedSearchApiClientInterface $searchApiClient
+     * @param CategorySearchApiClientInterface $categoryApiClient
      * @param RequestInterface $request
      */
     public function __construct(
         FacetedSearchApiClientInterface $searchApiClient,
+        CategorySearchApiClientInterface $categoryApiClient,
         RequestInterface $request
     ) {
         $this->searchApiClient = $searchApiClient;
+        $this->categoryApiClient = $categoryApiClient;
         $this->request = $request;
     }
 
@@ -140,10 +150,90 @@ class SearchService
         ?SearchFilters $filters = null
     ): array {
         $filters = $filters ?? new SearchFilters();
-        $key = json_encode([$queryText, $page, $limit, $sortOrder, $filters->toArray()]) ?: '';
+
+        return $this->cached(
+            ['search', $queryText, $page, $limit, $sortOrder, $filters->toArray()],
+            fn (): array => $this->searchApiClient->executeFacetedSearch(
+                $queryText,
+                $page,
+                $limit,
+                $sortOrder,
+                $filters
+            ),
+            $page,
+            $filters->hasSelection(),
+            $filters,
+            sprintf('Search API returned no results for "%s"', $queryText)
+        );
+    }
+
+    /**
+     * Products to display on a page of a category (SimpKo/project#380)
+     *
+     * @param int $page
+     * @param int $limit
+     * @param array $sortOrder
+     * @param SearchFilters $filters Categories of the page, selection of the layered navigation and facet request
+     * @param bool $directOnly only the products assigned to the categories (category without anchor)
+     * @return array Like search()
+     * @phpstan-param SortOrder $sortOrder
+     * @phpstan-return ProductSearchResult
+     * @throws EmptySearchResultException If the first page is empty, use the category page of the shop
+     * @throws SearchApiException
+     */
+    public function searchCategory(
+        int $page,
+        int $limit,
+        array $sortOrder,
+        SearchFilters $filters,
+        bool $directOnly
+    ): array {
+        return $this->cached(
+            ['category', $page, $limit, $sortOrder, $filters->toArray(), $directOnly],
+            fn (): array => $this->categoryApiClient->executeCategorySearch(
+                $page,
+                $limit,
+                $sortOrder,
+                $filters,
+                $directOnly
+            ),
+            $page,
+            // the categories of the page are no selection
+            $filters->hasLayeredSelection(),
+            $filters,
+            sprintf('Category API returned no results for %s', implode(',', $filters->getCategoryIds()))
+        );
+    }
+
+    /**
+     * Result (or the exception) of a request, kept per parameters
+     *
+     * @param array $parameters
+     * @param callable $request
+     * @param int $page
+     * @param bool $hasSelection whether the visitor selected filters
+     * @param SearchFilters $filters
+     * @param string $emptyMessage
+     * @return array
+     * @phpstan-param array<mixed> $parameters
+     * @phpstan-param callable(): FacetedSearchResult $request
+     * @phpstan-return ProductSearchResult
+     * @throws EmptySearchResultException
+     * @throws SearchApiException
+     */
+    private function cached(
+        array $parameters,
+        callable $request,
+        int $page,
+        bool $hasSelection,
+        SearchFilters $filters,
+        string $emptyMessage
+    ): array {
+        $key = json_encode($parameters) ?: '';
         if (!array_key_exists($key, $this->results)) {
             try {
-                $this->results[$key] = $this->executeSearch($queryText, $page, $limit, $sortOrder, $filters);
+                $response = $request();
+                $this->results[$key] = $this->toProductResult($response, $page, $hasSelection, $filters, $emptyMessage);
             } catch (SearchApiException $e) {
                 $this->results[$key] = $e;
             }
@@ -158,34 +248,35 @@ class SearchService
     }
 
     /**
-     * Queries the API and maps the hits to the displayed products
+     * The displayed products of a response of the API
      *
-     * @param string $queryText
+     * @param array $response
      * @param int $page
-     * @param int $limit
-     * @param array $sortOrder
+     * @param bool $hasSelection
      * @param SearchFilters $filters
+     * @param string $emptyMessage
      * @return array
-     * @phpstan-param SortOrder $sortOrder
+     * @phpstan-param FacetedSearchResult $response
      * @phpstan-return ProductSearchResult
-     * @throws SearchApiException
+     * @throws EmptySearchResultException
      */
-    private function executeSearch(
-        string $queryText,
+    private function toProductResult(
+        array $response,
         int $page,
-        int $limit,
-        array $sortOrder,
-        SearchFilters $filters
+        bool $hasSelection,
+        SearchFilters $filters,
+        string $emptyMessage
     ): array {
-        $response = $this->searchApiClient->executeFacetedSearch($queryText, $page, $limit, $sortOrder, $filters);
         // Only an empty first page means "nothing found" (also returned for bots), whatever the total says.
         // An empty later page means paged too far: no fallback, otherwise hits, total and pager would come from two
         // different result sets. Pages beyond the API's result pool return total 0.
         // A selection without hits is a real result, recognizable by its facets (bots get none): the page stays
         // empty with the facets, so the selection can be removed, instead of falling back to the shop's search.
-        $selectionWithoutHits = $filters->hasSelection() && !empty($response['facets']);
-        if (empty($response['results']) && $page === 1 && !$selectionWithoutHits) {
-            throw new EmptySearchResultException(sprintf('Search API returned no results for "%s"', $queryText));
+        $selectionWithoutHits = $hasSelection && !empty($response['facets']);
+        // A count request (countOnly) has no hits by design, it never means "nothing found"
+        $countOnly = $filters->isCountOnly();
+        if (empty($response['results']) && $page === 1 && !$selectionWithoutHits && !$countOnly) {
+            throw new EmptySearchResultException($emptyMessage);
         }
 
         $hits = [];

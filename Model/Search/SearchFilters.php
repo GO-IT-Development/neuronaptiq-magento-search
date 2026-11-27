@@ -56,6 +56,11 @@ class SearchFilters
     private ?array $priceRanges = null;
 
     /**
+     * @var bool
+     */
+    private bool $countOnly = false;
+
+    /**
      * Adds selected values of a group, empty groups or values are ignored
      *
      * @param string $group
@@ -219,6 +224,42 @@ class SearchFilters
     }
 
     /**
+     * Requests only the counts (SimpKo/project#363)
+     *
+     * The total and, with facets, their counts, without hits; the search service does not store the request as search
+     * of the session.
+     *
+     * @return self
+     */
+    public function withCountOnly(): self
+    {
+        $copy = clone $this;
+        $copy->countOnly = true;
+
+        return $copy;
+    }
+
+    /**
+     * Whether only the counts are requested
+     *
+     * @return bool
+     */
+    public function isCountOnly(): bool
+    {
+        return $this->countOnly;
+    }
+
+    /**
+     * Whether values or a price are selected in the layered navigation, without the categories of the page
+     *
+     * @return bool
+     */
+    public function hasLayeredSelection(): bool
+    {
+        return $this->groups !== [] || $this->priceMin !== null || $this->priceMax !== null;
+    }
+
+    /**
      * Whether a filter is selected (groups, categories or price)
      *
      * @return bool
@@ -251,6 +292,7 @@ class SearchFilters
             'price' => [$this->priceMin, $this->priceMax, $this->priceMaxExclusive],
             'facets' => $this->facets,
             'priceRanges' => $this->priceRanges,
+            'countOnly' => $this->countOnly,
         ];
     }
 

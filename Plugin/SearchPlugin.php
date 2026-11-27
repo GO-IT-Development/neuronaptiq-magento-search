@@ -7,23 +7,18 @@ use Magento\Framework\Api\Search\SearchCriteriaInterface;
 use Magento\Framework\Api\Search\SearchResultInterface;
 use Magento\Search\Api\SearchInterface;
 use NeuronaptiQ\Search\Exception\EmptySearchResultException;
-use NeuronaptiQ\Search\Model\Config;
 use NeuronaptiQ\Search\Model\MagentoSearchAdapter;
 use NeuronaptiQ\Search\Model\PageCacheGuard;
 use Psr\Log\LoggerInterface;
 
 /**
- * Intercepts Magento Catalog Search to fetch search results from NeuronaptiQ REST API
+ * Intercepts Magento Catalog Search to fetch the results of the quick search and the category pages from the
+ * NeuronaptiQ REST API (the adapter decides per request and setting)
  *
  * On API errors and empty results the Magento search is used and the page is kept out of the full page cache.
  */
 class SearchPlugin
 {
-    /**
-     * @var Config
-     */
-    private Config $config;
-
     /**
      * @var MagentoSearchAdapter
      */
@@ -40,18 +35,15 @@ class SearchPlugin
     private PageCacheGuard $pageCacheGuard;
 
     /**
-     * @param Config $config
      * @param MagentoSearchAdapter $searchAdapter
      * @param LoggerInterface $logger
      * @param PageCacheGuard $pageCacheGuard
      */
     public function __construct(
-        Config $config,
         MagentoSearchAdapter $searchAdapter,
         LoggerInterface $logger,
         PageCacheGuard $pageCacheGuard
     ) {
-        $this->config = $config;
         $this->searchAdapter = $searchAdapter;
         $this->logger = $logger;
         $this->pageCacheGuard = $pageCacheGuard;
@@ -70,10 +62,6 @@ class SearchPlugin
         callable $proceed,
         SearchCriteriaInterface $searchCriteria
     ): SearchResultInterface {
-        if (!$this->config->isSearchEnabled()) {
-            return $proceed($searchCriteria);
-        }
-
         try {
             $searchResult = $this->searchAdapter->search($searchCriteria);
         } catch (EmptySearchResultException $e) {

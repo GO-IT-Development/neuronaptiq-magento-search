@@ -47,12 +47,19 @@ class CriteriaFilterReader
     /**
      * Returns the selection and requests the facets with the price ranges of the shop
      *
+     * On a category page the category of the page is the hard category filter (the categories of the request to
+     * the search service), not a selection; a subcategory selected in the layered navigation stays a selection.
+     *
      * @param SearchCriteriaInterface $searchCriteria
+     * @param int|null $pageCategoryId the category of a category page, null on the search result page
      * @return SearchFilters
      */
-    public function read(SearchCriteriaInterface $searchCriteria): SearchFilters
+    public function read(SearchCriteriaInterface $searchCriteria, ?int $pageCategoryId = null): SearchFilters
     {
         $filters = new SearchFilters();
+        if ($pageCategoryId !== null) {
+            $filters = $filters->withCategoryIds([$pageCategoryId]);
+        }
         $priceFrom = null;
         $priceTo = null;
         $algorithm = null;
@@ -64,7 +71,11 @@ class CriteriaFilterReader
                 $values = $this->toList($filter->getValue());
                 switch ($field) {
                     case self::FIELD_CATEGORY:
-                        $filters = $filters->withCategories($values);
+                        $filters = $filters->withCategories(array_values(array_filter(
+                            $values,
+                            static fn ($value): bool => $pageCategoryId === null
+                                || !is_scalar($value) || (int)$value !== $pageCategoryId
+                        )));
                         break;
                     case self::FIELD_PRICE_FROM:
                         $priceFrom = $this->toPrice($values);

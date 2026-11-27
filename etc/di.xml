@@ -7,6 +7,10 @@
                 type="NeuronaptiQ\Search\Model\Api\SearchApiClient"/>
     <preference for="NeuronaptiQ\Search\Api\CrossSellingApiClientInterface"
                 type="NeuronaptiQ\Search\Model\Api\SearchApiClient"/>
+    <preference for="NeuronaptiQ\Search\Api\CategorySearchApiClientInterface"
+                type="NeuronaptiQ\Search\Model\Api\SearchApiClient"/>
+    <preference for="NeuronaptiQ\Search\Api\RecommendationApiClientInterface"
+                type="NeuronaptiQ\Search\Model\Api\SearchApiClient"/>
     <preference for="NeuronaptiQ\Search\Api\TrackingApiClientInterface"
                 type="NeuronaptiQ\Search\Model\Api\TrackingApiClient"/>
 
@@ -96,5 +100,11 @@
         <arguments>
             <argument name="logger" xsi:type="object">NeuronaptiQ\Search\Logger\Logger</argument>
         </arguments>
+    </type>
+
+    <!-- Magento's plugin adds configurables whose variants match the conditions of a "Catalog Products List", the
+         topseller widget has no conditions and replaces variants by their parent itself -->
+    <type name="NeuronaptiQ\Search\Block\Product\Widget\Topseller">
+        <plugin name="configurable_product_widget_product_list" disabled="true"/>
     </type>
 </config>

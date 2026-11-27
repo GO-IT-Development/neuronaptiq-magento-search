@@ -10,11 +10,12 @@ use Magento\Catalog\Model\Product\Visibility;
 use Magento\Catalog\Model\ResourceModel\Product\Collection;
 use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
 use Magento\CatalogInventory\Helper\Stock as StockHelper;
-use NeuronaptiQ\Search\Api\CrossSellingApiClientInterface;
+use NeuronaptiQ\Search\Api\RecommendationApiClientInterface;
 use Psr\Log\LoggerInterface;
 
 /**
- * Provides the NeuronaptiQ cross-sellings of a product as product collection for the "Related Products" block
+ * Provides the NeuronaptiQ cross-sellings as product collections for Magento's blocks: "Related Products" and
+ * "Upsell" of the product page, "Cross-Sell" of the cart page, each with the kind of its setting
  *
  * Variant hits are shown as their parent product, the variant is preselected via URL hash on the product page.
  *
@@ -28,9 +29,9 @@ class CrossSellingService
     private Config $config;
 
     /**
-     * @var CrossSellingApiClientInterface
+     * @var RecommendationApiClientInterface
      */
-    private CrossSellingApiClientInterface $apiClient;
+    private RecommendationApiClientInterface $apiClient;
 
     /**
      * @var CollectionFactory
@@ -63,9 +64,9 @@ class CrossSellingService
     private LoggerInterface $logger;
 
     /**
-     * Loaded collections per product id, null if there are no cross-sellings
+     * Loaded collections per products and kind, null if there are no cross-sellings
      *
-     * @var array<int, Collection|null>
+     * @var array<string, Collection|null>
      */
     private array $collections = [];
 
@@ -78,7 +79,7 @@ class CrossSellingService
 
     /**
      * @param Config $config
-     * @param CrossSellingApiClientInterface $apiClient
+     * @param RecommendationApiClientInterface $apiClient
      * @param CollectionFactory $collectionFactory
      * @param CatalogConfig $catalogConfig
      * @param Visibility $visibility
@@ -88,7 +89,7 @@ class CrossSellingService
      */
     public function __construct(
         Config $config,
-        CrossSellingApiClientInterface $apiClient,
+        RecommendationApiClientInterface $apiClient,
         CollectionFactory $collectionFactory,
         CatalogConfig $catalogConfig,
         Visibility $visibility,
@@ -107,7 +108,7 @@ class CrossSellingService
     }
 
     /**
-     * Returns the cross-selling products of the product, sorted by score
+     * Returns the cross-selling products of the "Related Products" block, sorted by score
      *
      * Returns null if cross-sellings are disabled, the API fails or there are no results; the caller should then
      * show the maintained related products.
@@ -117,16 +118,64 @@ class CrossSellingService
      */
     public function getProducts(ProductInterface $product): ?Collection
     {
-        $productId = (int)$product->getId();
-        if ($productId === 0) {
+        $storeId = $this->getStoreId($product);
+        if (!$this->config->isCrosssellingsEnabled($storeId)) {
             return null;
         }
 
-        if (!array_key_exists($productId, $this->collections)) {
-            $this->collections[$productId] = $this->loadProducts($product, $productId);
+        return $this->getProductsOfKind($product, $this->config->getCrosssellingsKind($storeId));
+    }
+
+    /**
+     * Returns the cross-selling products of the "Upsell" block, sorted by score
+     *
+     * Returns null if the upsell block is switched off, the API fails or there are no results; the caller should
+     * then show the maintained upsell products.
+     *
+     * @param ProductInterface $product
+     * @return Collection|null
+     */
+    public function getUpsellProducts(ProductInterface $product): ?Collection
+    {
+        $kind = $this->config->getUpsellKind($this->getStoreId($product));
+
+        return $kind !== null ? $this->getProductsOfKind($product, $kind) : null;
+    }
+
+    /**
+     * Returns the cross-selling products of the cart for the "Cross-Sell" block of the cart page
+     *
+     * Returns null if the cross-sell block is switched off, the cart is empty, the API fails or there are no
+     * results; the caller should then show the maintained cross-sell products.
+     *
+     * @param int[] $productIds products of the cart, the first 20 are sent
+     * @param int|null $storeId
+     * @return Collection|null
+     */
+    public function getCartProducts(array $productIds, ?int $storeId): ?Collection
+    {
+        $kind = $this->config->getCartCrosssellKind($storeId);
+        $productIds = array_slice(array_values(array_unique(array_filter(array_map('intval', $productIds)))), 0, 20);
+        if ($kind === null || $productIds === []) {
+            return null;
         }
 
-        return $this->collections[$productId];
+        $key = implode(',', $productIds) . '/' . $kind;
+        if (!array_key_exists($key, $this->collections)) {
+            $this->collections[$key] = $this->load(
+                fn (int $limit): array => $this->apiClient->getCrossSellingsOfProducts(
+                    array_map('strval', $productIds),
+                    $kind,
+                    $limit,
+                    $storeId
+                ),
+                $productIds,
+                $storeId,
+                sprintf('products %s', implode(',', $productIds))
+            );
+        }
+
+        return $this->collections[$key];
     }
 
     /**
@@ -141,58 +190,97 @@ class CrossSellingService
     }
 
     /**
-     * Queries the API and loads the cross-selling products
+     * Cross-selling products of a kind for a product, kept for the request
      *
      * @param ProductInterface $product
-     * @param int $productId
+     * @param string $kind
      * @return Collection|null
      */
-    private function loadProducts(ProductInterface $product, int $productId): ?Collection
+    private function getProductsOfKind(ProductInterface $product, string $kind): ?Collection
     {
-        $storeId = $product instanceof Product ? (int)$product->getStoreId() : null;
-        if (!$this->config->isCrosssellingsEnabled($storeId)) {
+        $productId = (int)$product->getId();
+        if ($productId === 0) {
             return null;
         }
 
-        try {
-            $hits = $this->apiClient->getCrossSellings(
-                (string)$productId,
-                $this->config->getCrosssellingsLimit($storeId),
-                $storeId
+        $storeId = $this->getStoreId($product);
+        $key = $productId . '/' . $kind;
+        if (!array_key_exists($key, $this->collections)) {
+            $this->collections[$key] = $this->load(
+                fn (int $limit): array => $this->apiClient->getCrossSellingsOfKind(
+                    (string)$productId,
+                    $kind,
+                    $limit,
+                    $storeId
+                ),
+                [$productId],
+                $storeId,
+                sprintf('product %d', $productId)
             );
+        }
+
+        return $this->collections[$key];
+    }
+
+    /**
+     * Queries the API and loads the cross-selling products
+     *
+     * @param callable $request the API request with the limit, returns the hits
+     * @param int[] $excludedIds the products the cross-sellings are for, they are not shown
+     * @param int|null $storeId
+     * @param string $subject the products in log entries
+     * @return Collection|null
+     * @phpstan-param callable(int): list<SearchHit> $request
+     */
+    private function load(callable $request, array $excludedIds, ?int $storeId, string $subject): ?Collection
+    {
+        try {
+            $hits = $request($this->config->getCrosssellingsLimit($storeId));
         } catch (\Throwable $e) {
             $this->logger->error(
-                sprintf('[NeuronaptiQ_Search] Cross-sellings of product %d failed: %s', $productId, $e->getMessage()),
+                sprintf('[NeuronaptiQ_Search] Cross-sellings of %s failed: %s', $subject, $e->getMessage()),
                 ['exception' => $e]
             );
             return null;
         }
 
-        $displayIds = $this->resolveDisplayIds($hits, $productId);
+        $displayIds = $this->resolveDisplayIds($hits, $excludedIds);
         if (empty($displayIds)) {
             return null;
         }
 
         $collection = $this->createCollection($displayIds, $storeId);
+
         return $collection->count() > 0 ? $collection : null;
     }
 
     /**
-     * Maps hits to the displayed product ids (parent of variants), removes duplicates and the product itself
+     * Store of the product
+     *
+     * @param ProductInterface $product
+     * @return int|null
+     */
+    private function getStoreId(ProductInterface $product): ?int
+    {
+        return $product instanceof Product ? (int)$product->getStoreId() : null;
+    }
+
+    /**
+     * Maps hits to the displayed product ids (parent of variants), removes duplicates and the excluded products
      *
      * Remembers the variant hash of the best scored variant per parent.
      *
      * @param array $hits
-     * @param int $productId
+     * @param int[] $excludedIds
      * @return int[]
      * @phpstan-param list<SearchHit> $hits
      */
-    private function resolveDisplayIds(array $hits, int $productId): array
+    private function resolveDisplayIds(array $hits, array $excludedIds): array
     {
         $displayIds = [];
         foreach ($hits as $hit) {
             $displayId = !empty($hit['parentId']) ? (int)$hit['parentId'] : (int)$hit['id'];
-            if ($displayId <= 0 || $displayId === $productId || isset($displayIds[$displayId])) {
+            if ($displayId <= 0 || in_array($displayId, $excludedIds, true) || isset($displayIds[$displayId])) {
                 continue;
             }
 
